@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.9.19](https://github.com/weichsel/ZIPFoundation/releases/tag/0.9.19)
+
+### Updated
+ - Fixed privacy manifest
+ - Fixed deprecation warning in package manifest
+ - Fixed resource bundling instruction in the podspec
+
+## [0.9.18](https://github.com/weichsel/ZIPFoundation/releases/tag/0.9.18)
+
+### Added
+ - Added ability to enforce symlink containment
+
+### Updated
+ - Fixed path escape vulnerability
+ - Fixed platform requirement warnings
+ - Improved error info when encountering permission errors
+
+## [0.9.17](https://github.com/weichsel/ZIPFoundation/releases/tag/0.9.17)
+
+### Added
+ - Added visionOS support
+ - Added Xcode privacy manifest
+ - Added throwing initializers for `Archive`
+ 
+### Updated
+ - Improved symlink handling
+ - Improved forwarding of underlying errors
+
 ## [0.9.16](https://github.com/weichsel/ZIPFoundation/releases/tag/0.9.16)
 
 ### Added

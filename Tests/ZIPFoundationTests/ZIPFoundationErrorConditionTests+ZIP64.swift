@@ -2,7 +2,7 @@
 //  ZIPFoundationErrorConditionTests+ZIP64.swift
 //  ZIPFoundation
 //
-//  Copyright © 2017-2023 Thomas Zoechling, https://www.peakstep.com and the ZIP Foundation project authors.
+//  Copyright © 2017-2024 Thomas Zoechling, https://www.peakstep.com and the ZIP Foundation project authors.
 //  Released under the MIT License.
 //
 //  See https://github.com/weichsel/ZIPFoundation/blob/master/LICENSE for license information.
@@ -15,40 +15,26 @@ extension ZIPFoundationTests {
 
     func testWriteEOCDWithTooLargeSizeOfCentralDirectory() {
         let archive = self.archive(for: #function, mode: .create)
-        var didCatchExpectedError = false
         archive.zip64EndOfCentralDirectory = makeMockZIP64EndOfCentralDirectory(sizeOfCentralDirectory: .max,
                                                                                 numberOfEntries: 0)
-        do {
-            _ = try archive.writeEndOfCentralDirectory(centralDirectoryStructure: makeMockCentralDirectory()!,
-                                                       startOfCentralDirectory: 0,
-                                                       startOfEndOfCentralDirectory: 0,
-                                                       operation: .add)
-        } catch let error as Archive.ArchiveError {
-            XCTAssertNotNil(error == .invalidCentralDirectorySize)
-            didCatchExpectedError = true
-        } catch {
-            XCTFail("Unexpected error while writing end of central directory with large central directory size.")
-        }
-        XCTAssert(didCatchExpectedError)
+        XCTAssertSwiftError(
+            try archive.writeEndOfCentralDirectory(centralDirectoryStructure: makeMockCentralDirectory()!,
+                                                   startOfCentralDirectory: 0,
+                                                   startOfEndOfCentralDirectory: 0,
+                                                   operation: .add),
+            throws: Archive.ArchiveError.invalidCentralDirectorySize)
     }
 
     func testWriteEOCDWithTooLargeCentralDirectoryOffset() {
         let archive = self.archive(for: #function, mode: .create)
-        var didCatchExpectedError = false
         archive.zip64EndOfCentralDirectory = makeMockZIP64EndOfCentralDirectory(sizeOfCentralDirectory: 0,
                                                                                 numberOfEntries: .max)
-        do {
-            _ = try archive.writeEndOfCentralDirectory(centralDirectoryStructure: makeMockCentralDirectory()!,
-                                                       startOfCentralDirectory: 0,
-                                                       startOfEndOfCentralDirectory: 0,
-                                                       operation: .add)
-        } catch let error as Archive.ArchiveError {
-            XCTAssertNotNil(error == .invalidCentralDirectoryEntryCount)
-            didCatchExpectedError = true
-        } catch {
-            XCTFail("Unexpected error while writing end of central directory with large number of entries.")
-        }
-        XCTAssert(didCatchExpectedError)
+        XCTAssertSwiftError(
+            try archive.writeEndOfCentralDirectory(centralDirectoryStructure: makeMockCentralDirectory()!,
+                                                   startOfCentralDirectory: 0,
+                                                   startOfEndOfCentralDirectory: 0,
+                                                   operation: .add),
+            throws: Archive.ArchiveError.invalidCentralDirectoryEntryCount)
     }
 
     // MARK: - Helper
@@ -79,12 +65,10 @@ extension ZIPFoundationTests {
                                  0xb0, 0x11, 0x00, 0x00, 0x00, 0x00]
         guard let cds = Entry.CentralDirectoryStructure(data: Data(cdsBytes),
                                                         additionalDataProvider: { count -> Data in
-                                                            guard let pathData = "/".data(using: .utf8) else {
-                                                                throw AdditionalDataError.encodingError
-                                                            }
-                                                            XCTAssert(count == pathData.count)
-                                                            return pathData
-                                                        }) else {
+            let pathData = Data("/".utf8)
+            XCTAssert(count == pathData.count)
+            return pathData
+        }) else {
             XCTFail("Failed to read central directory structure.")
             return nil
         }

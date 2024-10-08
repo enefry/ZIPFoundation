@@ -2,7 +2,7 @@
 //  ZIPFoundationMemoryTests.swift
 //  ZIPFoundation
 //
-//  Copyright © 2017-2023 Thomas Zoechling, https://www.peakstep.com and the ZIP Foundation project authors.
+//  Copyright © 2017-2024 Thomas Zoechling, https://www.peakstep.com and the ZIP Foundation project authors.
 //  Released under the MIT License.
 //
 //  See https://github.com/weichsel/ZIPFoundation/blob/master/LICENSE for license information.
@@ -96,7 +96,7 @@ extension ZIPFoundationTests {
         XCTAssert(archive.checkIntegrity())
     }
 
-    func testUpdateArchiveRemoveUncompressedEntryFromMemory() {
+    func testUpdateArchiveRemoveUncompressedEntryFromMemory() throws {
         let archive = self.memoryArchive(for: #function, mode: .update)
         XCTAssert(archive.checkIntegrity())
         guard let entryToRemove = archive["original"] else {
@@ -108,54 +108,32 @@ extension ZIPFoundationTests {
             XCTFail("Failed to remove entry from memory archive with error : \(error)")
         }
         XCTAssert(archive.checkIntegrity())
-        var didCatchExpectedError = false
-        // Trigger the code path that is taken if funopen() fails
-        // We can only do this on Apple platforms
-        #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
-        self.runWithoutMemory {
-            do {
-                try archive.remove(entryToRemove)
-            } catch {
-                didCatchExpectedError = true
-            }
-        }
-        XCTAssert(didCatchExpectedError)
-        let emptyArchive = Archive(accessMode: .create)
-        let data = Data.makeRandomData(size: 1024)
-        guard let replacementArchive = Archive(data: data, accessMode: .create) else {
-            XCTFail("Failed to create replacement archive.")
-            return
-        }
-        didCatchExpectedError = false
-        // Trigger the error code path that is taken when no temporary archive
-        // can be created during replacement
-        replacementArchive.memoryFile = nil
-        do {
-            try emptyArchive?.replaceCurrentArchive(with: replacementArchive)
-        } catch {
-            didCatchExpectedError = true
-        }
-        XCTAssert(didCatchExpectedError)
-        #endif
     }
 
-    func testMemoryArchiveErrorConditions() {
+    func testMemoryArchiveErrorConditions() throws {
         let data = Data.makeRandomData(size: 1024)
-        let invalidArchive = Archive(data: data, accessMode: .read)
-        XCTAssertNil(invalidArchive)
-        // Trigger the code path that is taken if funopen() fails
-        // We can only do this on Apple platforms
-        #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
-        var unallocatableArchive: Archive?
-        self.runWithoutMemory {
-            unallocatableArchive = Archive(data: data, accessMode: .read)
-        }
-        XCTAssertNil(unallocatableArchive)
-        #endif
+        XCTAssertSwiftError(try Archive(data: data, accessMode: .read),
+                            throws: Archive.ArchiveError.missingEndOfCentralDirectoryRecord)
+        let archive = self.memoryArchive(for: #function, mode: .create)
+        let replacementArchive = self.memoryArchive(for: #function, mode: .read)
+        replacementArchive.memoryFile = nil
+        XCTAssertSwiftError(
+            try archive.replaceCurrentArchive(with: replacementArchive),
+            throws: Archive.ArchiveError.unwritableArchive
+        )
+
+        var noEndOfCentralDirectoryArchiveURL = ZIPFoundationTests.tempZipDirectoryURL
+        noEndOfCentralDirectoryArchiveURL.appendPathComponent(ProcessInfo.processInfo.globallyUniqueString)
+        let fullPermissionAttributes = [FileAttributeKey.posixPermissions: NSNumber(value: defaultFilePermissions)]
+        FileManager().createFile(atPath: noEndOfCentralDirectoryArchiveURL.path, contents: nil,
+                                 attributes: fullPermissionAttributes)
+        let noEOCDArchiveData = try Data(contentsOf: noEndOfCentralDirectoryArchiveURL)
+        XCTAssertSwiftError(try Archive(data: noEOCDArchiveData, accessMode: .update),
+                            throws: Archive.ArchiveError.missingEndOfCentralDirectoryRecord)
     }
 
     func testReadOnlyFile() {
-        let file = MemoryFile(data: "ABCDEabcde".data(using: .utf8)!).open(mode: "r")
+        let file = Archive.MemoryFile(data: Data("ABCDEabcde".utf8)).open(mode: .read)
         var chars: [UInt8] = [0, 0, 0]
         XCTAssertEqual(fread(&chars, 1, 2, file), 2)
         XCTAssertEqual(String(Unicode.Scalar(chars[0])), "A")
@@ -173,9 +151,9 @@ extension ZIPFoundationTests {
     }
 
     func testReadOnlySlicedFile() {
-        let originalData = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".data(using: .utf8)!
+        let originalData = Data("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".utf8)
         let slice = originalData[10..<originalData.count]
-        let file = MemoryFile(data: slice).open(mode: "r")
+        let file = Archive.MemoryFile(data: slice).open(mode: .read)
         var chars: [UInt8] = [0, 0, 0]
         XCTAssertEqual(fread(&chars, 1, 2, file), 2)
         XCTAssertEqual(String(Unicode.Scalar(chars[0])), "A")
@@ -183,25 +161,25 @@ extension ZIPFoundationTests {
     }
 
     func testWriteOnlyFile() {
-        let mem = MemoryFile()
-        let file = mem.open(mode: "w")
+        let mem = Archive.MemoryFile()
+        let file = mem.open(mode: .create)
         XCTAssertEqual(fwrite("01234", 1, 5, file), 5)
         XCTAssertEqual(fseek(file, -2, SEEK_END), 0)
         XCTAssertEqual(fwrite("5678", 1, 4, file), 4)
         XCTAssertEqual(fwrite("9", 1, 1, file), 1)
         XCTAssertEqual(fflush(file), 0)
-        XCTAssertEqual(mem.data, "01256789".data(using: .utf8))
+        XCTAssertEqual(mem.data, Data("01256789".utf8))
     }
 
     func testReadWriteFile() {
-        let mem = MemoryFile(data: "witch".data(using: .utf8)!)
-        let file = mem.open(mode: "r+")
+        let mem = Archive.MemoryFile(data: Data("witch".utf8))
+        let file = mem.open(mode: .update)
         XCTAssertEqual(fseek(file, 1, SEEK_CUR), 0)
         XCTAssertEqual(fwrite("a", 1, 1, file), 1)
         XCTAssertEqual(fseek(file, 0, SEEK_END), 0)
         XCTAssertEqual(fwrite("face", 1, 4, file), 4)
         XCTAssertEqual(fflush(file), 0)
-        XCTAssertEqual(mem.data, "watchface".data(using: .utf8))
+        XCTAssertEqual(mem.data, Data("watchface".utf8))
         // Also exercise the codepath where we explicitly seek beyond `data.count`
         XCTAssertEqual(fseek(file, 10, SEEK_SET), 0)
         XCTAssertEqual(fwrite("x", 1, 1, file), 1)
@@ -210,31 +188,21 @@ extension ZIPFoundationTests {
         XCTAssertEqual(fseek(file, 2, SEEK_SET), 0)
         XCTAssertEqual(fclose(file), 0)
     }
-
-    func testAppendFile() {
-        let mem = MemoryFile(data: "anti".data(using: .utf8)!)
-        let file = mem.open(mode: "a+")
-        XCTAssertEqual(fwrite("cipation", 1, 8, file), 8)
-        XCTAssertEqual(fflush(file), 0)
-        XCTAssertEqual(mem.data, "anticipation".data(using: .utf8))
-    }
 }
 
 // MARK: - Helpers
 
 extension ZIPFoundationTests {
+
     func memoryArchive(for testFunction: String, mode: Archive.AccessMode,
-                       preferredEncoding: String.Encoding? = nil) -> Archive {
+                       pathEncoding: String.Encoding? = nil) -> Archive {
         var sourceArchiveURL = ZIPFoundationTests.resourceDirectoryURL
         sourceArchiveURL.appendPathComponent(testFunction.replacingOccurrences(of: "()", with: ""))
         sourceArchiveURL.appendPathExtension("zip")
         do {
             let data = mode == .create ? Data() : try Data(contentsOf: sourceArchiveURL)
-            guard let archive = Archive(data: data, accessMode: mode,
-                                        preferredEncoding: preferredEncoding) else {
-                                            throw Archive.ArchiveError.unreadableArchive
-            }
-            return archive
+            return try Archive(data: data, accessMode: mode,
+                               pathEncoding: pathEncoding)
         } catch {
             XCTFail("Failed to open memory archive for '\(sourceArchiveURL.lastPathComponent)'")
             type(of: self).tearDown()

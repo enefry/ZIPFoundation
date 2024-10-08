@@ -2,7 +2,7 @@
 //  FileManager+ZIP.swift
 //  ZIPFoundation
 //
-//  Copyright © 2017-2023 Thomas Zoechling, https://www.peakstep.com and the ZIP Foundation project authors.
+//  Copyright © 2017-2024 Thomas Zoechling, https://www.peakstep.com and the ZIP Foundation project authors.
 //  Released under the MIT License.
 //
 //  See https://github.com/weichsel/ZIPFoundation/blob/master/LICENSE for license information.
@@ -11,6 +11,7 @@
 import Foundation
 
 extension FileManager {
+
     typealias CentralDirectoryStructure = Entry.CentralDirectoryStructure
 
     /// Zips the file or directory contents at the specified source URL to the destination URL.
@@ -39,9 +40,7 @@ extension FileManager {
         guard !fileManager.itemExists(at: destinationURL) else {
             throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destinationURL.path])
         }
-        guard let archive = Archive(url: destinationURL, accessMode: .create) else {
-            throw Archive.ArchiveError.unwritableArchive
-        }
+        let archive = try Archive(url: destinationURL, accessMode: .create)
         let isDirectory = try FileManager.typeForItem(at: sourceURL) == .directory
         if isDirectory {
             var subPaths = try self.subpathsOfDirectory(atPath: sourceURL.path)
@@ -88,19 +87,18 @@ extension FileManager {
     ///   - sourceURL: The file URL pointing to an existing ZIP file.
     ///   - destinationURL: The file URL that identifies the destination directory of the unzip operation.
     ///   - skipCRC32: Optional flag to skip calculation of the CRC32 checksum to improve performance.
+    ///   - allowUncontainedSymlinks: Optional flag to allow symlinks that point to paths outside the destination.
     ///   - progress: A progress object that can be used to track or cancel the unzip operation.
-    ///   - preferredEncoding: Encoding for entry paths. Overrides the encoding specified in the archive.
+    ///   - pathEncoding: Encoding for entry paths. Overrides the encoding specified in the archive.
     /// - Throws: Throws an error if the source item does not exist or the destination URL is not writable.
-    public func unzipItem(at sourceURL: URL, to destinationURL: URL, skipCRC32: Bool = false,
-                          progress: Progress? = nil, preferredEncoding: String.Encoding? = nil) throws {
+    public func unzipItem(at sourceURL: URL, to destinationURL: URL,
+                          skipCRC32: Bool = false, allowUncontainedSymlinks: Bool = false,
+                          progress: Progress? = nil, pathEncoding: String.Encoding? = nil) throws {
         let fileManager = FileManager()
         guard fileManager.itemExists(at: sourceURL) else {
             throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: sourceURL.path])
         }
-        guard let archive = Archive(url: sourceURL, accessMode: .read, preferredEncoding: preferredEncoding) else {
-            throw Archive.ArchiveError.unreadableArchive
-        }
-
+        let archive = try Archive(url: sourceURL, accessMode: .read, pathEncoding: pathEncoding)
         var totalUnitCount = Int64(0)
         if let progress = progress {
             totalUnitCount = archive.reduce(0, { $0 + archive.totalUnitCountForReading($1) })
@@ -108,7 +106,7 @@ extension FileManager {
         }
 
         for entry in archive {
-            let path = preferredEncoding == nil ? entry.path : entry.path(using: preferredEncoding!)
+            let path = pathEncoding == nil ? entry.path : entry.path(using: pathEncoding!)
             let entryURL = destinationURL.appendingPathComponent(path)
             guard entryURL.isContained(in: destinationURL) else {
                 throw CocoaError(.fileReadInvalidFileName,
@@ -118,9 +116,12 @@ extension FileManager {
             if let progress = progress {
                 let entryProgress = archive.makeProgressForReading(entry)
                 progress.addChild(entryProgress, withPendingUnitCount: entryProgress.totalUnitCount)
-                crc32 = try archive.extract(entry, to: entryURL, skipCRC32: skipCRC32, progress: entryProgress)
+                crc32 = try archive.extract(entry, to: entryURL,
+                                            skipCRC32: skipCRC32, allowUncontainedSymlinks: allowUncontainedSymlinks,
+                                            progress: entryProgress)
             } else {
-                crc32 = try archive.extract(entry, to: entryURL, skipCRC32: skipCRC32)
+                crc32 = try archive.extract(entry, to: entryURL,
+                                            skipCRC32: skipCRC32, allowUncontainedSymlinks: allowUncontainedSymlinks)
             }
 
             func verifyChecksumIfNecessary() throws {
@@ -169,7 +170,7 @@ extension FileManager {
             return
         }
 
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
+#if os(macOS) || os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
         guard let posixPermissions = attributes[.posixPermissions] as? NSNumber else {
             throw Entry.EntryError.missingPermissionsAttributeError
         }
@@ -224,7 +225,7 @@ extension FileManager {
         let defaultPermissions = entryType == .directory ? defaultDirectoryPermissions : defaultFilePermissions
         var attributes = [.posixPermissions: defaultPermissions] as [FileAttributeKey: Any]
         // Certain keys are not yet supported in swift-corelibs
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
+#if os(macOS) || os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
         attributes[.modificationDate] = Date(dateTime: (fileDate, fileTime))
 #endif
         let versionMadeBy = centralDirectoryStructure.versionMadeBy
@@ -280,7 +281,7 @@ extension FileManager {
         let entryFileSystemRepresentation = fileManager.fileSystemRepresentation(withPath: url.path)
         var fileStat = stat()
         lstat(entryFileSystemRepresentation, &fileStat)
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
+#if os(macOS) || os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
         let modTimeSpec = fileStat.st_mtimespec
 #else
         let modTimeSpec = fileStat.st_mtim
@@ -296,14 +297,14 @@ extension FileManager {
         guard fileManager.itemExists(at: url) else {
             throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
         }
+
         let entryFileSystemRepresentation = fileManager.fileSystemRepresentation(withPath: url.path)
-        var fileStat = stat()
-        lstat(entryFileSystemRepresentation, &fileStat)
-        guard fileStat.st_size >= 0 else {
-            throw CocoaError(.fileReadTooLarge, userInfo: [NSFilePathErrorKey: url.path])
-        }
+        var stats = stat()
+        lstat(entryFileSystemRepresentation, &stats)
+        guard stats.st_size >= 0 else { throw CocoaError(.fileReadTooLarge, userInfo: [NSFilePathErrorKey: url.path]) }
+
         // `st_size` is a signed int value
-        return Int64(fileStat.st_size)
+        return Int64(stats.st_size)
     }
 
     class func typeForItem(at url: URL) throws -> Entry.EntryType {
@@ -331,7 +332,7 @@ extension CocoaError {
 #if swift(>=4.2)
 #else
 
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
+#if os(macOS) || os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
 #else
 
     // The swift-corelibs-foundation version of NSError.swift was missing a convenience method to create
@@ -351,9 +352,25 @@ extension CocoaError {
 }
 
 public extension URL {
+
     func isContained(in parentDirectoryURL: URL) -> Bool {
         // Ensure this URL is contained in the passed in URL
         let parentDirectoryURL = URL(fileURLWithPath: parentDirectoryURL.path, isDirectory: true).standardized
-        return self.standardized.absoluteString.hasPrefix(parentDirectoryURL.absoluteString)
+        // Maliciously crafted ZIP files can contain entries using a prepended path delimiter `/` in combination
+        // with the parent directory shorthand `..` to bypass our containment check.
+        // When a malicious entry path like e.g. `/../secret.txt` gets appended to the destination 
+        // directory URL (e.g. `file:///tmp/`), the resulting URL `file:///tmp//../secret.txt` gets expanded
+        // to `file:///tmp/secret` when using `URL.standardized`. This URL would pass the check performed
+        // in `isContained(in:)`.
+        // Lower level API like POSIX `fopen` - which is used at a later point during extraction - expands
+        // `/tmp//../secret.txt` to `/secret.txt` though. This would lead to an escape to the parent directory.
+        // To avoid that, we replicate the behavior of `fopen`s path expansion and replace all double delimiters
+        // with single delimiters.
+        // More details: https://github.com/weichsel/ZIPFoundation/issues/281
+        let sanitizedEntryPathURL: URL = {
+            let sanitizedPath = self.path.replacingOccurrences(of: "//", with: "/")
+            return URL(fileURLWithPath: sanitizedPath)
+        }()
+        return sanitizedEntryPathURL.standardized.absoluteString.hasPrefix(parentDirectoryURL.absoluteString)
     }
 }
